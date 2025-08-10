@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Command, Parser, Subcommand};
 use git2::Repository;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use std::{env, fs, io::{self, Write}, path::PathBuf};
+use std::{env, fs, io::{self, Read, Write}, path::PathBuf, process::Stdio};
 use anyhow::{Result, anyhow};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -91,7 +91,8 @@ enum Commands {
     /// Adds a new task to the current project
     Add(AddArgs),
     /// List tasks
-    Ls 
+    Ls,
+    Edit
 }
 
 #[derive(Args, Debug)]
@@ -120,6 +121,9 @@ fn main() {
         Some(Commands::Ls) => {
             println!("ls command");
             list_task().unwrap()
+        }
+        Some(Commands::Edit) => {
+            edit_task().unwrap()
         }
         /*Some(Commands::Ls { project }) => {
             if project.is_some() && project.clone().unwrap().is_empty() {
@@ -153,6 +157,48 @@ fn list_task() -> Result<()> {
         let name = entry.file_name();
         println!("{}", name.to_str().ok_or(anyhow!("could not read file name"))?)
     }
+    Ok(())
+}
+
+fn edit_task() -> Result<()> {
+    println!("edit");
+    let mut project_dir = get_project_path().unwrap();
+    project_dir.push("test_file.td");
+    //let mut task_file = std::fs::File::open(project_dir).unwrap();
+
+    let content = std::fs::read_to_string(&project_dir)?;
+    let mut task = Task::from_str(&content)?;
+
+    let mut temp_path = PathBuf::new();
+    temp_path.push(std::env::temp_dir());
+    temp_path.push(format!("td_{}_{}.md", task.metadata.id, Utc::now().timestamp()));
+    let mut temp_file = std::fs::File::create(&temp_path)?;
+    let _ = temp_file.write_all(task.description.as_bytes());
+
+    let editor = env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+    let mut command = std::process::Command::new(&editor);
+    command.arg(&temp_path);
+    command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    match command.spawn() {
+        Ok(mut child) => {
+            let status = child.wait().expect("child process should complete");
+            if !status.success() {eprintln!("Editor exited with non-zero status: {:?}", status)}
+            let mut edited_content = String::new();
+            let mut temp_file = std::fs::File::open(&temp_path)?;
+            let _ = temp_file.read_to_string(&mut edited_content);
+            println!("debug tmp: \n{}", edited_content);
+            task.description = edited_content;
+            task.metadata.updated_at = Some(Utc::now());
+            let mut task_file = std::fs::File::create(project_dir)?;
+            let _ = task_file.write_all(task.to_string().unwrap().as_bytes());
+        }
+        Err(e) => eprintln!("Failed to launch editor '{}': '{}'", editor, e)
+    }
+
     Ok(())
 }
 
